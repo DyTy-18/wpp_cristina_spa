@@ -10,7 +10,8 @@ let socket: Socket | null = null;
  */
 export function getSocket(): Socket {
   if (!socket) {
-    socket = io(import.meta.env.VITE_API_BASE_URL, {
+    // Cadena vacía o no seteada -> mismo origen que sirve la página (producción).
+    socket = io(import.meta.env.VITE_API_BASE_URL || undefined, {
       transports: ['websocket', 'polling'],
     });
   }

@@ -23,6 +23,7 @@ const IGNORED_PREFIXES = [
   '/metrics',
   '/api-docs',
   '/files',
+  '/admin', // archivos estáticos del panel — no es "actividad" del negocio
 ];
 
 /**

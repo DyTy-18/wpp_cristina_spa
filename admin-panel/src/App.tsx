@@ -8,7 +8,7 @@ import ProtectedRoute from './routes/ProtectedRoute';
 export default function App() {
   return (
     <AuthProvider>
-      <BrowserRouter>
+      <BrowserRouter basename={import.meta.env.PROD ? '/admin' : '/'}>
         <Routes>
           <Route path="/login" element={<Login />} />
           <Route

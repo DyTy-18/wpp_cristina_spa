@@ -7,6 +7,8 @@
 /log
 /obj/Debug
 /tokens
+/data
+/scheduled-reminders.json
 /uploads
 /WhatsAppImages
 /wppconnect-server.njsproj

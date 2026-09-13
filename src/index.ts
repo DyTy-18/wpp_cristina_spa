@@ -18,8 +18,10 @@ import { defaultLogger } from '@wppconnect-team/wppconnect';
 import cors from 'cors';
 import express, { Express, NextFunction, Router } from 'express';
 import boolParser from 'express-query-boolean';
+import fs from 'fs';
 import { createServer } from 'http';
 import mergeDeep from 'merge-deep';
+import path from 'path';
 import process from 'process';
 import { Server as Socket } from 'socket.io';
 import { Logger } from 'winston';
@@ -103,6 +105,20 @@ export function initServer(serverOptions: Partial<ServerOptions>): {
   app.use(requestLog);
   app.use('/api/admin', adminRoutes);
   app.use(routes);
+
+  // Panel de administración (React ya compilado) — servido bajo /admin en el
+  // mismo contenedor/dominio para no complicar el deploy con CORS/DNS aparte.
+  const adminPanelDist = path.join(process.cwd(), 'admin-panel', 'dist');
+  if (fs.existsSync(adminPanelDist)) {
+    app.use('/admin', express.static(adminPanelDist));
+    app.get('/admin/*', (_req, res) => {
+      res.sendFile(path.join(adminPanelDist, 'index.html'));
+    });
+  } else {
+    logger.warn(
+      `[AdminPanel] No se encontró ${adminPanelDist} — corre "npm run build" en admin-panel/ para servirlo.`
+    );
+  }
 
   createFolders();
   const http = createServer(app);

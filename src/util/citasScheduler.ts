@@ -41,7 +41,15 @@ export interface ScheduledReminder {
 
 // ─── Storage ─────────────────────────────────────────────────────────────────
 
-const STORAGE_FILE = path.resolve(process.cwd(), 'scheduled-reminders.json');
+// Vive en su propia carpeta (no en la raíz del proyecto) para poder montarla
+// como volumen en Docker sin el problema de montar un archivo suelto que
+// todavía no existe (Docker lo crearía como carpeta, no como archivo).
+const DATA_DIR = path.resolve(process.cwd(), 'data');
+const STORAGE_FILE = path.join(DATA_DIR, 'scheduled-reminders.json');
+
+if (!fs.existsSync(DATA_DIR)) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+}
 
 function readReminders(): ScheduledReminder[] {
   try {

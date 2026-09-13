@@ -1,9 +1,17 @@
 .git
 .github
 .hust
+.claude
 *.tgz
 dist
 log
 node_modules
 npm-debug.log
 tokens
+wppconnect_tokens
+userDataDir
+data
+uploads
+WhatsAppImages
+qr.html
+.env

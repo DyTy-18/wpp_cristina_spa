@@ -36,6 +36,15 @@ COPY . .
 RUN yarn install
 RUN yarn build
 
+# Panel de administración (React) — se compila aparte, no necesita
+# las dependencias nativas del backend (vips/chromium).
+FROM node:22.22.1-alpine AS admin-panel-build
+WORKDIR /usr/src/wpp-server/admin-panel
+COPY admin-panel/package.json admin-panel/package-lock.json ./
+RUN npm install
+COPY admin-panel/ .
+RUN npm run build
+
 FROM build AS runtime
 WORKDIR /usr/src/wpp-server/
 
@@ -44,6 +53,8 @@ RUN apk add --no-cache \
     chromium \
     vips \
     fftw
+
+COPY --from=admin-panel-build /usr/src/wpp-server/admin-panel/dist ./admin-panel/dist
 
 EXPOSE 21465
 ENTRYPOINT ["node", "dist/server.js"]

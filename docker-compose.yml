@@ -6,11 +6,16 @@ services:
     restart: unless-stopped
     build:
       context: .
+    env_file:
+      - .env
     volumes:
-      - ./config.ts:/usr/src/wpp-server/config.ts
-      - ./wppconnect_tokens:/usr/src/wpp-server/tokens
+      - wpp_tokens:/usr/src/wpp-server/tokens
+      - wpp_user_data:/usr/src/wpp-server/userDataDir
+      - wpp_data:/usr/src/wpp-server/data
     ports:
       - "21465:21465"
 
 volumes:
-  wppconnect_tokens: {}      
+  wpp_tokens: {}
+  wpp_user_data: {}
+  wpp_data: {}
