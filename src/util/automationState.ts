@@ -88,6 +88,9 @@ export async function guardedSendText(
     logger.warn(`[Automation] Envíos pausados — no se mandó nada a ${phone}.`);
     return { sent: false };
   }
+  if (!client || typeof client.sendText !== 'function') {
+    throw new Error('La sesión de WhatsApp no está conectada.');
+  }
   const result = await client.sendText(phone, message);
   return { sent: true, result };
 }
