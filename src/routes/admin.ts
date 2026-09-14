@@ -28,6 +28,19 @@ adminRoutes.post('/login', AdminController.login);
 // Actividad reciente del servidor
 adminRoutes.get('/requests', adminAuth, AdminController.listRequests);
 
+// Interruptor global de envíos
+adminRoutes.get('/automation', adminAuth, AdminController.getAutomationStatus);
+adminRoutes.post(
+  '/automation/pause',
+  adminAuth,
+  AdminController.pauseAutomation
+);
+adminRoutes.post(
+  '/automation/resume',
+  adminAuth,
+  AdminController.resumeAutomation
+);
+
 // Sesión de WhatsApp (siempre sobre WPP_ADMIN_SESSION)
 adminRoutes.get(
   '/session/status',

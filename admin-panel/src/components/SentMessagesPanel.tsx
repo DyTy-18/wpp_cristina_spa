@@ -12,9 +12,21 @@ interface SentMessageEntry {
   cita_id: number | string | null;
   template: string;
   trigger: 'inmediato' | 'recordatorio';
-  status: 'success' | 'failed';
+  status: 'success' | 'failed' | 'paused';
   timestamp: string;
 }
+
+const STATUS_PILL: Record<SentMessageEntry['status'], string> = {
+  success: 'status-pill--sent',
+  failed: 'status-pill--failed',
+  paused: 'status-pill--pending',
+};
+
+const STATUS_LABEL: Record<SentMessageEntry['status'], string> = {
+  success: 'Enviado',
+  failed: 'Falló',
+  paused: 'Pausado',
+};
 
 export default function SentMessagesPanel() {
   const [messages, setMessages] = useState<SentMessageEntry[]>([]);
@@ -82,12 +94,8 @@ export default function SentMessagesPanel() {
                 </td>
                 <td>{m.cita_id ?? '—'}</td>
                 <td>
-                  <span
-                    className={`status-pill ${
-                      m.status === 'failed' ? 'status-pill--failed' : 'status-pill--sent'
-                    }`}
-                  >
-                    {m.status === 'failed' ? 'Falló' : 'Enviado'}
+                  <span className={`status-pill ${STATUS_PILL[m.status]}`}>
+                    {STATUS_LABEL[m.status]}
                   </span>
                 </td>
               </tr>

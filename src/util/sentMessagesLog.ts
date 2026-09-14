@@ -22,7 +22,7 @@ export interface SentMessageEntry {
   cita_id: number | string | null;
   template: string;
   trigger: 'inmediato' | 'recordatorio';
-  status: 'success' | 'failed';
+  status: 'success' | 'failed' | 'paused';
   error?: string;
   timestamp: string;
 }

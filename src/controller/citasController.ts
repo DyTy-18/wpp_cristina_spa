@@ -16,6 +16,7 @@
 
 import { Request, Response } from 'express';
 
+import { guardedSendText, isPaused } from '../util/automationState';
 import {
   listConversations,
   registerLid,
@@ -346,7 +347,32 @@ export async function sendCitaReminder(req: Request, res: Response) {
   const message = buildMessage(cita, template as TemplateKey);
 
   try {
-    const result = await req.client.sendText(phone, message);
+    const outcome = await guardedSendText(
+      req.client,
+      phone,
+      message,
+      req.logger
+    );
+
+    if (!outcome.sent) {
+      recordSentMessage({
+        phone,
+        nombre: clientDisplayName(cita.cliente),
+        cita_id: cita.id ?? null,
+        template,
+        trigger: 'inmediato',
+        status: 'paused',
+        timestamp: new Date().toISOString(),
+      });
+      return res.status(200).json({
+        status: 'paused',
+        message: 'Los envíos están pausados — el mensaje no se mandó.',
+        cita_id: cita.id ?? null,
+        phone,
+      });
+    }
+
+    const result = outcome.result;
 
     req.logger.info(
       `[Citas] Recordatorio enviado a ${phone} — cita #${cita.id ?? 'N/A'}`
@@ -448,10 +474,18 @@ export async function sendBulkCitaReminders(req: Request, res: Response) {
     });
   }
 
+  if (isPaused()) {
+    return res.status(200).json({
+      status: 'paused',
+      message: 'Los envíos están pausados — no se mandó ningún mensaje.',
+      total: reminders.length,
+    });
+  }
+
   const results: Array<{
     cita_id: number | string | null;
     phone: string;
-    status: 'sent' | 'failed';
+    status: 'sent' | 'failed' | 'paused';
     error?: string;
   }> = [];
 
@@ -470,6 +504,13 @@ export async function sendBulkCitaReminders(req: Request, res: Response) {
 
     const phone = normalizePhone(cita.cliente.telefono);
     const message = buildMessage(cita, template as TemplateKey);
+
+    // Se revisa en cada mensaje, no solo al empezar el lote — si alguien
+    // pausa a mitad de un envío masivo largo, el resto no sigue mandándose.
+    if (isPaused()) {
+      results.push({ cita_id: cita.id ?? null, phone, status: 'paused' });
+      continue;
+    }
 
     try {
       await req.client.sendText(phone, message);
@@ -779,7 +820,32 @@ export async function processCita(req: Request, res: Response) {
   if (estado === 'confirmada') {
     const message = buildMessage(cita, 'confirmacion');
     try {
-      const result = await req.client.sendText(phone, message);
+      const outcome = await guardedSendText(
+        req.client,
+        phone,
+        message,
+        req.logger
+      );
+
+      if (!outcome.sent) {
+        recordSentMessage({
+          phone,
+          nombre: clientDisplayName(cita.cliente),
+          cita_id: cita.id ?? null,
+          template: 'confirmacion',
+          trigger: 'inmediato',
+          status: 'paused',
+          timestamp: new Date().toISOString(),
+        });
+        return res.status(200).json({
+          status: 'paused',
+          message: 'Los envíos están pausados — el mensaje no se mandó.',
+          cita_id: cita.id ?? null,
+          phone,
+        });
+      }
+
+      const result = outcome.result;
 
       req.logger.info(
         `[Citas] Confirmación enviada a ${phone} — cita #${cita.id ?? 'N/A'}`
@@ -883,7 +949,31 @@ export async function sendReminderNow(req: Request, res: Response) {
     : reminder.message;
 
   try {
-    const result = await req.client.sendText(reminder.phone, message);
+    const outcome = await guardedSendText(
+      req.client,
+      reminder.phone,
+      message,
+      req.logger
+    );
+
+    if (!outcome.sent) {
+      recordSentMessage({
+        phone: reminder.phone,
+        nombre,
+        cita_id: reminder.cita_id ?? null,
+        template: reminder.template ?? 'recordatorio',
+        trigger: 'recordatorio',
+        status: 'paused',
+        timestamp: new Date().toISOString(),
+      });
+      return res.status(200).json({
+        status: 'paused',
+        message: 'Los envíos están pausados — el mensaje no se mandó.',
+        phone: reminder.phone,
+      });
+    }
+
+    const result = outcome.result;
     // No se borra de la cola: el envío manual es un mensaje extra, el
     // recordatorio 24h/1h original se mantiene y sigue su curso normal.
     setConversation(

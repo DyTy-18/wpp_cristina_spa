@@ -318,6 +318,11 @@ button.ghost:hover:not(:disabled) {
   border-color: var(--sent-border);
 }
 
+.panel--paused {
+  border: 1px solid var(--danger);
+  box-shadow: 0 0 0 3px var(--danger-bg);
+}
+
 .pipeline-arrow {
   display: none;
 }

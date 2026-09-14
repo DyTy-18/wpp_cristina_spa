@@ -17,6 +17,7 @@ import bcrypt from 'bcrypt';
 import { Request, Response } from 'express';
 import jwt from 'jsonwebtoken';
 
+import { getAutomationState, setPaused } from '../util/automationState';
 import { listCitaOutcomes } from '../util/citaOutcomesLog';
 import { listRequestLog } from '../util/requestLog';
 import { listSentMessages } from '../util/sentMessagesLog';
@@ -116,4 +117,36 @@ export function listCitaOutcomesHandler(_req: Request, res: Response) {
     total: outcomes.length,
     outcomes,
   });
+}
+
+/**
+ * GET /api/admin/automation
+ *
+ * Estado del interruptor global de envíos.
+ */
+export function getAutomationStatus(_req: Request, res: Response) {
+  return res.status(200).json({ status: 'success', ...getAutomationState() });
+}
+
+/**
+ * POST /api/admin/automation/pause
+ * POST /api/admin/automation/resume
+ *
+ * Pausa/reanuda el ENVÍO de mensajes de WhatsApp. Todo lo demás (Laravel,
+ * programación de recordatorios, procesamiento de respuestas) sigue andando.
+ */
+export function pauseAutomation(req: Request, res: Response) {
+  setPaused(true);
+  req.logger.warn(
+    '[Automation] Envíos pausados desde el panel de administración.'
+  );
+  return res.status(200).json({ status: 'success', ...getAutomationState() });
+}
+
+export function resumeAutomation(req: Request, res: Response) {
+  setPaused(false);
+  req.logger.info(
+    '[Automation] Envíos reanudados desde el panel de administración.'
+  );
+  return res.status(200).json({ status: 'success', ...getAutomationState() });
 }

@@ -10,6 +10,7 @@
 import api from 'axios';
 import { Logger } from 'winston';
 
+import { guardedSendText } from './automationState';
 import { recordCitaOutcome } from './citaOutcomesLog';
 import { emitCitasUpdate } from './realtime';
 
@@ -145,9 +146,11 @@ export async function handleIncomingMessage(
         logger
       );
 
-      await client.sendText(
+      await guardedSendText(
+        client,
         message.from,
-        `✅ ¡Perfecto! Tu cita ha sido *confirmada*. ¡Te esperamos! 💆‍♀️✨`
+        `✅ ¡Perfecto! Tu cita ha sido *confirmada*. ¡Te esperamos! 💆‍♀️✨`,
+        logger
       );
     } else if (respuesta === '2') {
       conv.state = 'esperando_reagendar';
@@ -159,17 +162,21 @@ export async function handleIncomingMessage(
         } — preguntando reagendar`
       );
 
-      await client.sendText(
+      await guardedSendText(
+        client,
         message.from,
         `😔 Entendemos. ¿Deseas *reagendar* tu cita para otro horario?\n\n` +
           `Responde *1* para 🗓️ Reagendar\n` +
-          `Responde *2* para ❌ Cancelar definitivamente`
+          `Responde *2* para ❌ Cancelar definitivamente`,
+        logger
       );
     } else {
       // Respuesta no reconocida
-      await client.sendText(
+      await guardedSendText(
+        client,
         message.from,
-        `Por favor responde *1* para Confirmar o *2* para Cancelar.`
+        `Por favor responde *1* para Confirmar o *2* para Cancelar.`,
+        logger
       );
     }
     return;
@@ -202,9 +209,11 @@ export async function handleIncomingMessage(
         logger
       );
 
-      await client.sendText(
+      await guardedSendText(
+        client,
         message.from,
-        `🗓️ ¡Perfecto! Una de nuestras colaboradoras se pondrá en contacto contigo a la brevedad para coordinar un nuevo horario. 💕`
+        `🗓️ ¡Perfecto! Una de nuestras colaboradoras se pondrá en contacto contigo a la brevedad para coordinar un nuevo horario. 💕`,
+        logger
       );
     } else if (respuesta === '2') {
       clearConversation(rawPhone);
@@ -231,14 +240,18 @@ export async function handleIncomingMessage(
         logger
       );
 
-      await client.sendText(
+      await guardedSendText(
+        client,
         message.from,
-        `😔 Tu cita ha sido *cancelada*. Si en algún momento deseas agendar nuevamente, estamos aquí para ayudarte. 💕`
+        `😔 Tu cita ha sido *cancelada*. Si en algún momento deseas agendar nuevamente, estamos aquí para ayudarte. 💕`,
+        logger
       );
     } else {
-      await client.sendText(
+      await guardedSendText(
+        client,
         message.from,
-        `Por favor responde *1* para Reagendar o *2* para Cancelar definitivamente.`
+        `Por favor responde *1* para Reagendar o *2* para Cancelar definitivamente.`,
+        logger
       );
     }
     return;

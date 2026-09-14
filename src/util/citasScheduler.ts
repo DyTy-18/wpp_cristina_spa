@@ -9,6 +9,7 @@ import fs from 'fs';
 import path from 'path';
 import { Logger } from 'winston';
 
+import { isPaused } from './automationState';
 import { registerLid, setConversation } from './citasConversation';
 import { emitCitasUpdate } from './realtime';
 import { recordSentMessage } from './sentMessagesLog';
@@ -127,6 +128,13 @@ export function startCitasScheduler(logger: Logger): void {
     const due = pending.filter((r) => new Date(r.send_at) <= now);
     if (due.length === 0) return;
 
+    if (isPaused()) {
+      logger.warn(
+        `[CitasScheduler] Envíos pausados — ${due.length} recordatorio(s) esperando a que se reactive.`
+      );
+      return;
+    }
+
     logger.info(`[CitasScheduler] ${due.length} recordatorio(s) para enviar.`);
 
     const remaining = pending.filter((r) => new Date(r.send_at) > now);
@@ -139,6 +147,16 @@ export function startCitasScheduler(logger: Logger): void {
           `[CitasScheduler] Sesión "${reminder.session}" no encontrada. Reintentará en el próximo ciclo.`
         );
         remaining.push(reminder); // re-encola
+        continue;
+      }
+
+      // Se revisa en cada mensaje, no solo al empezar la tanda — si alguien
+      // pausa a mitad de un lote largo, el resto se re-encola en vez de seguir mandando.
+      if (isPaused()) {
+        logger.warn(
+          `[CitasScheduler] Envíos pausados a mitad de la tanda — se re-encola el resto.`
+        );
+        remaining.push(reminder);
         continue;
       }
 

@@ -1,3 +1,4 @@
+import AutomationPanel from '../components/AutomationPanel';
 import ConnectionPanel from '../components/ConnectionPanel';
 import ConversationsPanel from '../components/ConversationsPanel';
 import OutcomesPanel from '../components/OutcomesPanel';
@@ -22,6 +23,7 @@ export default function Dashboard() {
       </header>
 
       <main className="dashboard-main">
+        <AutomationPanel />
         <ConnectionPanel />
 
         <div className="panel-pair panel-pair--pipeline">

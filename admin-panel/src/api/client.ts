@@ -2,9 +2,9 @@ import axios from 'axios';
 
 export const TOKEN_STORAGE_KEY = 'wpp_admin_token';
 
-// En producción el panel vive bajo /admin (servido por el mismo backend);
-// en dev vive en la raíz del servidor de Vite.
-const BASE_PATH = import.meta.env.PROD ? '/admin' : '';
+// Vite ya sabe bajo qué prefijo se sirve la app (definido en vite.config.ts,
+// "base") tanto en dev como en producción — mismo valor en los dos casos.
+const BASE_PATH = import.meta.env.BASE_URL.replace(/\/$/, '');
 
 const apiClient = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL || undefined,
