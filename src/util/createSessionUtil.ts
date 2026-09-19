@@ -15,6 +15,8 @@
  */
 import { create, SocketState, StatusFind } from '@wppconnect-team/wppconnect';
 import { Request } from 'express';
+import fs from 'fs';
+import path from 'path';
 
 import { download } from '../controller/sessionController';
 import { WhatsAppServer } from '../types/WhatsAppServer';
@@ -23,6 +25,25 @@ import { handleIncomingMessage } from './citasConversation';
 import { autoDownload, callWebHook, startHelper } from './functions';
 import { clientsArray, eventEmitter } from './sessionUtil';
 import Factory from './tokenStore/factory';
+
+/**
+ * Si el proceso se reinició sin que Chromium cerrara bien (crash, kill,
+ * redeploy), estos archivos quedan del proceso anterior y el browser nuevo
+ * se niega a lanzar con "profile appears to be in use by another Chromium
+ * process". Como solo corre un proceso de wppconnect-server por contenedor,
+ * cualquier lock que quede al arrancar es de una ejecución muerta — es
+ * seguro borrarlo antes de lanzar un browser nuevo.
+ */
+function clearStaleBrowserLock(userDataDir: string): void {
+  for (const file of ['SingletonLock', 'SingletonCookie', 'SingletonSocket']) {
+    try {
+      const filePath = path.join(userDataDir, file);
+      if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    } catch {
+      // no crítico — si el lock sigue ahí el browser fallará igual y quedará en el log
+    }
+  }
+}
 
 export default class CreateSessionUtil {
   startChatWootClient(client: any) {
@@ -56,8 +77,10 @@ export default class CreateSessionUtil {
       this.startChatWootClient(client);
 
       if (req.serverOptions.customUserDataDir) {
+        const userDataDir = req.serverOptions.customUserDataDir + session;
+        clearStaleBrowserLock(userDataDir);
         req.serverOptions.createOptions.puppeteerOptions = {
-          userDataDir: req.serverOptions.customUserDataDir + session,
+          userDataDir,
         };
       }
 
@@ -154,10 +177,12 @@ export default class CreateSessionUtil {
       }
     } catch (e) {
       req.logger.error(e);
-      if (e instanceof Error && e.name == 'TimeoutError') {
-        const client = this.getClient(session) as any;
-        client.status = 'CLOSED';
-      }
+      // Cualquier falla acá (timeout, browser que no lanza, etc.) debe
+      // liberar la sesión — si se queda en "INITIALIZING", el guard del
+      // principio de esta función bloquea todo reintento futuro hasta que
+      // se reinicie el proceso entero.
+      const client = this.getClient(session) as any;
+      client.status = 'CLOSED';
     }
   }
 

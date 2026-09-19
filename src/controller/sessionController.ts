@@ -254,7 +254,13 @@ export async function closeSession(req: Request, res: Response): Promise<any> {
    */
   const session = req.session;
   try {
-    if ((clientsArray as any)[session].status === null) {
+    const current = (clientsArray as any)[session];
+    if (current?.status === null || typeof current?.close !== 'function') {
+      // No hay una sesión con browser real corriendo (nunca llegó a
+      // inicializarse, ej. el lanzamiento de Chromium falló) — no hay nada
+      // que cerrar, pero igual limpiamos el estado atascado para permitir
+      // un reintento limpio desde "Iniciar sesión".
+      (clientsArray as any)[session] = { status: null };
       return await res
         .status(200)
         .json({ status: true, message: 'Session successfully closed' });
