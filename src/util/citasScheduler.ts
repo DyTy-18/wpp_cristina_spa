@@ -12,7 +12,7 @@ import { Logger } from 'winston';
 import { isPaused } from './automationState';
 import { registerLid, setConversation } from './citasConversation';
 import { emitCitasUpdate } from './realtime';
-import { recordSentMessage } from './sentMessagesLog';
+import { CitaSnapshot, recordSentMessage } from './sentMessagesLog';
 import { clientsArray } from './sessionUtil';
 
 // ─── Tipos ───────────────────────────────────────────────────────────────────
@@ -164,6 +164,15 @@ export function startCitasScheduler(logger: Logger): void {
         ? `${reminder.cita.cliente.nombre} ${reminder.cita.cliente.apellido}`.trim()
         : undefined;
 
+      const citaInfo: CitaSnapshot | undefined = reminder.cita
+        ? {
+            fecha: reminder.cita.fecha,
+            hora: reminder.cita.hora,
+            servicios: reminder.cita.servicios,
+            empleado: reminder.cita.empleado,
+          }
+        : undefined;
+
       try {
         const result = await client.sendText(reminder.phone, reminder.message);
         setConversation(
@@ -204,6 +213,7 @@ export function startCitasScheduler(logger: Logger): void {
           trigger: 'recordatorio',
           status: 'success',
           timestamp: new Date().toISOString(),
+          cita: citaInfo,
         });
       } catch (error) {
         logger.error(
@@ -218,6 +228,7 @@ export function startCitasScheduler(logger: Logger): void {
           status: 'failed',
           error: String(error),
           timestamp: new Date().toISOString(),
+          cita: citaInfo,
         });
         // No re-encola — evita spam si hay un error persistente
       }

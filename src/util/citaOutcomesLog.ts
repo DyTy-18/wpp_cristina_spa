@@ -21,6 +21,7 @@
  * como rastro de esa decisión dentro del panel.
  */
 
+import { createPersistentLog } from './persistentLog';
 import { emitCitasUpdate } from './realtime';
 
 export type CitaOutcome = 'confirmada' | 'cancelada' | 'reagendar';
@@ -33,15 +34,17 @@ export interface CitaOutcomeEntry {
   timestamp: string;
 }
 
-const MAX_ENTRIES = 200;
-const entries: CitaOutcomeEntry[] = [];
+const MAX_ENTRIES = 2000;
+const log = createPersistentLog<CitaOutcomeEntry>(
+  'cita-outcomes.json',
+  MAX_ENTRIES
+);
 
 export function recordCitaOutcome(entry: CitaOutcomeEntry): void {
-  entries.unshift(entry);
-  if (entries.length > MAX_ENTRIES) entries.length = MAX_ENTRIES;
+  log.record(entry);
   emitCitasUpdate();
 }
 
 export function listCitaOutcomes(): CitaOutcomeEntry[] {
-  return entries;
+  return log.list();
 }

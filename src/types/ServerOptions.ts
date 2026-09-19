@@ -3,7 +3,8 @@ import { CreateConfig } from '@wppconnect-team/wppconnect';
 
 export interface ServerOptions {
   secretKey: string;
-  citasCallbackUrl: string;
+  citasApiUrl: string;
+  citasApiToken: string;
   admin: {
     jwtSecret: string;
     username: string;

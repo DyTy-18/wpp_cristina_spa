@@ -294,7 +294,8 @@ export default class CreateSessionUtil {
       await handleIncomingMessage(
         client,
         message,
-        req.serverOptions.citasCallbackUrl || '',
+        req.serverOptions.citasApiUrl || '',
+        req.serverOptions.citasApiToken || '',
         req.logger
       );
     });

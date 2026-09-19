@@ -79,32 +79,34 @@ export default function OutcomesPanel() {
       {outcomes.length === 0 ? (
         <p className="muted">Todavía nadie respondió a un recordatorio.</p>
       ) : (
-        <table>
-          <thead>
-            <tr>
-              <th>Hora</th>
-              <th>Cliente</th>
-              <th>Cita</th>
-              <th>Decisión</th>
-            </tr>
-          </thead>
-          <tbody>
-            {outcomes.map((o, i) => (
-              <tr key={i}>
-                <td className="nowrap-cell">{formatDateTime(o.timestamp)}</td>
-                <td>
-                  <ClientCell nombre={o.nombre} phone={o.phone} />
-                </td>
-                <td>{o.cita_id ?? '—'}</td>
-                <td>
-                  <span className={`status-pill ${OUTCOME_PILL[o.accion]}`}>
-                    {OUTCOME_LABEL[o.accion]}
-                  </span>
-                </td>
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Hora</th>
+                <th>Cliente</th>
+                <th>Cita</th>
+                <th>Decisión</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {outcomes.map((o, i) => (
+                <tr key={i}>
+                  <td className="nowrap-cell">{formatDateTime(o.timestamp)}</td>
+                  <td>
+                    <ClientCell nombre={o.nombre} phone={o.phone} />
+                  </td>
+                  <td>{o.cita_id ?? '—'}</td>
+                  <td>
+                    <span className={`status-pill ${OUTCOME_PILL[o.accion]}`}>
+                      {OUTCOME_LABEL[o.accion]}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </section>
   );

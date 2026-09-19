@@ -67,6 +67,20 @@ export function clearConversation(phone: string): void {
   emitCitasUpdate();
 }
 
+/**
+ * Limpia cualquier conversación activa asociada a una cita (ej. cuando
+ * Laravel avisa que la cita fue eliminada) para que una respuesta 1/2
+ * tardía del cliente no intente confirmar/cancelar algo que ya no existe.
+ */
+export function clearConversationForCita(
+  citaId: number | string | null | undefined
+): void {
+  if (citaId == null) return;
+  for (const [phone, conv] of conversations.entries()) {
+    if (conv.cita_id === citaId) clearConversation(phone);
+  }
+}
+
 export function listConversations(): Conversation[] {
   return Array.from(conversations.values());
 }
@@ -76,7 +90,8 @@ export function listConversations(): Conversation[] {
 export async function handleIncomingMessage(
   client: any,
   message: any,
-  callbackUrl: string,
+  citasApiUrl: string,
+  citasApiToken: string,
   logger: Logger
 ): Promise<void> {
   // Log de diagnóstico — remover cuando todo funcione
@@ -136,13 +151,11 @@ export async function handleIncomingMessage(
         timestamp: new Date().toISOString(),
       });
 
-      await notificarLaravel(
-        callbackUrl,
-        {
-          cita_id: conv.cita_id,
-          phone: rawPhone,
-          accion: 'confirmada',
-        },
+      await updateCitaEstado(
+        citasApiUrl,
+        citasApiToken,
+        conv.cita_id,
+        'confirmada',
         logger
       );
 
@@ -199,14 +212,14 @@ export async function handleIncomingMessage(
         timestamp: new Date().toISOString(),
       });
 
-      await notificarLaravel(
-        callbackUrl,
-        {
-          cita_id: conv.cita_id,
-          phone: rawPhone,
-          accion: 'reagendar',
-        },
-        logger
+      // "reagendar" todavía no tiene endpoint propio en Laravel (el PATCH de
+      // estado solo acepta confirmada/cancelada) — queda pendiente de definir
+      // si esto cancela la cita actual o la mueve de fecha. Por ahora solo se
+      // registra localmente y un humano coordina el nuevo horario.
+      logger.info(
+        `[CitasConv] Reagendar solicitado para cita #${
+          conv.cita_id ?? 'N/A'
+        } — no se notifica a Laravel (sin endpoint definido aún).`
       );
 
       await guardedSendText(
@@ -230,13 +243,11 @@ export async function handleIncomingMessage(
         timestamp: new Date().toISOString(),
       });
 
-      await notificarLaravel(
-        callbackUrl,
-        {
-          cita_id: conv.cita_id,
-          phone: rawPhone,
-          accion: 'cancelada',
-        },
+      await updateCitaEstado(
+        citasApiUrl,
+        citasApiToken,
+        conv.cita_id,
+        'cancelada',
         logger
       );
 
@@ -260,24 +271,43 @@ export async function handleIncomingMessage(
 
 // ─── Notificación a Laravel ───────────────────────────────────────────────────
 
-async function notificarLaravel(
-  callbackUrl: string,
-  data: { cita_id: number | string | null; phone: string; accion: string },
+/**
+ * Refleja en Laravel que el cliente confirmó/canceló por WhatsApp, vía el
+ * endpoint PATCH /api/wpp/citas/{id}/estado. Este cambio no dispara de vuelta
+ * el push process-cita (Laravel ya sabe que lo originó WPP), evitando el eco.
+ */
+async function updateCitaEstado(
+  apiUrl: string,
+  apiToken: string,
+  citaId: number | string | null,
+  estado: 'confirmada' | 'cancelada',
   logger: Logger
 ): Promise<void> {
-  if (!callbackUrl) {
+  if (!apiUrl) {
     logger.warn(
-      `[CitasConv] No hay citasCallbackUrl configurado — no se notificó a Laravel.`
+      `[CitasConv] No hay citasApiUrl configurado — no se notificó a Laravel (estado="${estado}").`
+    );
+    return;
+  }
+  if (citaId == null) {
+    logger.warn(
+      `[CitasConv] No hay cita_id para notificar estado="${estado}" a Laravel — se omite.`
     );
     return;
   }
 
   try {
-    await api.post(callbackUrl, data);
+    await api.patch(
+      `${apiUrl}/api/wpp/citas/${citaId}/estado`,
+      { estado },
+      { headers: { Authorization: `Bearer ${apiToken}` } }
+    );
     logger.info(
-      `[CitasConv] Laravel notificado — accion="${data.accion}" cita_id=${data.cita_id}`
+      `[CitasConv] Laravel notificado — cita #${citaId} → estado="${estado}"`
     );
   } catch (error) {
-    logger.error(`[CitasConv] Error al notificar Laravel: ${error}`);
+    logger.error(
+      `[CitasConv] Error al notificar estado a Laravel (cita #${citaId}): ${error}`
+    );
   }
 }

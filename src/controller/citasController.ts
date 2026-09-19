@@ -18,6 +18,7 @@ import { Request, Response } from 'express';
 
 import { guardedSendText, isPaused } from '../util/automationState';
 import {
+  clearConversationForCita,
   listConversations,
   registerLid,
   setConversation,
@@ -28,7 +29,7 @@ import {
   listReminders,
   removeRemindersForCita,
 } from '../util/citasScheduler';
-import { recordSentMessage } from '../util/sentMessagesLog';
+import { CitaSnapshot, recordSentMessage } from '../util/sentMessagesLog';
 
 // ─── Tipos ──────────────────────────────────────────────────────────────────
 
@@ -43,6 +44,7 @@ interface CitaPayload {
   fecha: string; // "2026-03-20"
   hora: string; // "14:30"
   estado?: string; // pendiente | confirmada | completada | cancelada
+  accion?: 'actualizada' | 'eliminada'; // solo viene en el push process-cita
   cliente: CitaCliente;
   servicios?: string[];
   empleado?: string;
@@ -58,6 +60,14 @@ type TemplateKey =
   | 'cancelacion'
   | 'reagendacion'
   | 'default';
+
+// Plantillas que le piden al cliente responder 1/2 — solo estas deben abrir
+// una conversación de confirmación (las demás son avisos, no preguntas).
+const CONFIRM_TEMPLATES: TemplateKey[] = [
+  'solicitud_confirmacion',
+  'recordatorio_24h',
+  'recordatorio_1h',
+];
 
 // ─── Templates de mensajes ───────────────────────────────────────────────────
 
@@ -230,8 +240,22 @@ function buildDynamicReminderMessage(cita: {
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function normalizePhone(telefono: string): string {
-  // Elimina espacios, guiones, paréntesis
-  return telefono.replace(/[\s\-().+]/g, '');
+  // Elimina espacios, guiones, paréntesis, +
+  let cleaned = telefono.replace(/[\s\-().+]/g, '');
+
+  // Prefijo de discado internacional "00" (ej. 00591...)
+  if (cleaned.startsWith('00')) {
+    cleaned = cleaned.slice(2);
+  }
+
+  // Los celulares bolivianos tienen 8 dígitos y empiezan con 6 o 7. Laravel
+  // no siempre manda el código de país (591) por delante — se lo anteponemos,
+  // si no, WhatsApp no reconoce el número y el mensaje nunca llega.
+  if (cleaned.length === 8 && /^[67]/.test(cleaned)) {
+    cleaned = `591${cleaned}`;
+  }
+
+  return cleaned;
 }
 
 function clientDisplayName(cliente: {
@@ -239,6 +263,15 @@ function clientDisplayName(cliente: {
   apellido: string;
 }): string {
   return `${cliente.nombre} ${cliente.apellido}`.trim();
+}
+
+function citaSnapshot(cita: CitaPayload): CitaSnapshot {
+  return {
+    fecha: cita.fecha,
+    hora: cita.hora,
+    servicios: cita.servicios,
+    empleado: cita.empleado,
+  };
 }
 
 function returnError(req: Request, res: Response, error: any) {
@@ -363,6 +396,7 @@ export async function sendCitaReminder(req: Request, res: Response) {
         trigger: 'inmediato',
         status: 'paused',
         timestamp: new Date().toISOString(),
+        cita: citaSnapshot(cita),
       });
       return res.status(200).json({
         status: 'paused',
@@ -373,6 +407,25 @@ export async function sendCitaReminder(req: Request, res: Response) {
     }
 
     const result = outcome.result;
+
+    if (CONFIRM_TEMPLATES.includes(template as TemplateKey)) {
+      setConversation(
+        phone,
+        'esperando_confirmacion',
+        cita.id ?? null,
+        clientDisplayName(cita.cliente)
+      );
+
+      try {
+        const toRaw: string =
+          (result as any)?.to || (result as any)?.chatId?._serialized || '';
+        if (toRaw.includes('@lid')) {
+          registerLid(toRaw.replace('@lid', ''), phone);
+        }
+      } catch {
+        // no crítico — solo afecta la resolución de LID en la respuesta del cliente
+      }
+    }
 
     req.logger.info(
       `[Citas] Recordatorio enviado a ${phone} — cita #${cita.id ?? 'N/A'}`
@@ -385,6 +438,7 @@ export async function sendCitaReminder(req: Request, res: Response) {
       trigger: 'inmediato',
       status: 'success',
       timestamp: new Date().toISOString(),
+      cita: citaSnapshot(cita),
     });
 
     return res.status(201).json({
@@ -405,6 +459,7 @@ export async function sendCitaReminder(req: Request, res: Response) {
       status: 'failed',
       error: String(error),
       timestamp: new Date().toISOString(),
+      cita: citaSnapshot(cita),
     });
     returnError(req, res, error);
   }
@@ -513,7 +568,26 @@ export async function sendBulkCitaReminders(req: Request, res: Response) {
     }
 
     try {
-      await req.client.sendText(phone, message);
+      const result = await req.client.sendText(phone, message);
+
+      if (CONFIRM_TEMPLATES.includes(template as TemplateKey)) {
+        setConversation(
+          phone,
+          'esperando_confirmacion',
+          cita.id ?? null,
+          clientDisplayName(cita.cliente)
+        );
+
+        try {
+          const toRaw: string =
+            (result as any)?.to || (result as any)?.chatId?._serialized || '';
+          if (toRaw.includes('@lid')) {
+            registerLid(toRaw.replace('@lid', ''), phone);
+          }
+        } catch {
+          // no crítico — solo afecta la resolución de LID en la respuesta del cliente
+        }
+      }
 
       req.logger.info(
         `[Citas] Bulk: recordatorio enviado a ${phone} — cita #${
@@ -528,6 +602,7 @@ export async function sendBulkCitaReminders(req: Request, res: Response) {
         trigger: 'inmediato',
         status: 'success',
         timestamp: new Date().toISOString(),
+        cita: citaSnapshot(cita),
       });
 
       results.push({
@@ -546,6 +621,7 @@ export async function sendBulkCitaReminders(req: Request, res: Response) {
         status: 'failed',
         error: String(error),
         timestamp: new Date().toISOString(),
+        cita: citaSnapshot(cita),
       });
       results.push({
         cita_id: cita.id ?? null,
@@ -684,8 +760,9 @@ export function getScheduledReminders(_req: Request, res: Response) {
  * Endpoint unificado. Laravel llama esto siempre que una cita cambia de estado.
  * El servidor decide qué hacer según el estado:
  *
- *   confirmada → envío inmediato template "confirmacion"
- *   pendiente  → programa recordatorio_24h y recordatorio_1h (si hay tiempo)
+ *   confirmada → envío inmediato template "confirmacion" + programa
+ *                recordatorio_24h y recordatorio_1h (si hay tiempo)
+ *   pendiente  → sin acción (el cliente todavía no confirmó)
  *   completada → sin acción
  *   cancelada  → sin acción
  *
@@ -720,10 +797,34 @@ export async function processCita(req: Request, res: Response) {
     });
   }
 
+  // accion "eliminada": la cita se borró en el admin — cancelar recordatorios
+  // pendientes y cualquier conversación activa, sin mandar mensaje al cliente.
+  if (cita.accion === 'eliminada') {
+    removeRemindersForCita(cita.id ?? null);
+    clearConversationForCita(cita.id ?? null);
+    req.logger.info(
+      `[Citas] processCita: cita #${
+        cita.id ?? 'N/A'
+      } eliminada — recordatorios y conversación cancelados.`
+    );
+    return res.status(200).json({
+      status: 'no_action',
+      action: 'eliminada',
+      message: 'Cita eliminada — recordatorios cancelados.',
+      cita_id: cita.id ?? null,
+    });
+  }
+
   const estado = cita.estado.toLowerCase();
 
-  // Estados que no generan ninguna acción
-  if (estado === 'completada' || estado === 'cancelada') {
+  // Estados que no generan ninguna acción — "pendiente" significa que el
+  // cliente todavía no confirmó, así que no hay nada que recordarle todavía;
+  // los recordatorios recién se programan cuando pasa a "confirmada".
+  if (
+    estado === 'completada' ||
+    estado === 'cancelada' ||
+    estado === 'pendiente'
+  ) {
     req.logger.info(
       `[Citas] processCita: estado "${estado}" — sin acción para cita #${
         cita.id ?? 'N/A'
@@ -739,9 +840,10 @@ export async function processCita(req: Request, res: Response) {
   const phone = normalizePhone(cita.cliente.telefono);
   const session = req.params.session;
 
-  // ── pendiente: programar recordatorios 24h y 1h antes ────────────────────
-  if (estado === 'pendiente') {
-    // Evita duplicados si esta cita ya se procesó antes (ej. Laravel reenvía el webhook)
+  // ── confirmada: aviso inmediato + programar recordatorios 24h y 1h ───────
+  if (estado === 'confirmada') {
+    // Evita duplicados si esta cita ya se procesó antes (ej. Laravel reenvía
+    // el webhook, o se reprograma fecha/hora manteniendo el mismo estado).
     removeRemindersForCita(cita.id ?? null);
 
     const citaDateTime = new Date(`${cita.fecha}T${cita.hora}:00`);
@@ -798,26 +900,6 @@ export async function processCita(req: Request, res: Response) {
       );
     }
 
-    if (scheduled.length === 0) {
-      return res.status(200).json({
-        status: 'no_action',
-        message:
-          'La cita es en menos de 1 hora, no se programaron recordatorios.',
-        cita_id: cita.id ?? null,
-      });
-    }
-
-    return res.status(201).json({
-      status: 'scheduled',
-      action: 'scheduled',
-      scheduled,
-      cita_id: cita.id ?? null,
-      phone,
-    });
-  }
-
-  // ── confirmada: envío inmediato de mensaje de confirmación ───────────────
-  if (estado === 'confirmada') {
     const message = buildMessage(cita, 'confirmacion');
     try {
       const outcome = await guardedSendText(
@@ -836,12 +918,15 @@ export async function processCita(req: Request, res: Response) {
           trigger: 'inmediato',
           status: 'paused',
           timestamp: new Date().toISOString(),
+          cita: citaSnapshot(cita),
         });
         return res.status(200).json({
           status: 'paused',
-          message: 'Los envíos están pausados — el mensaje no se mandó.',
+          message:
+            'Los envíos están pausados — el mensaje no se mandó, pero los recordatorios sí quedaron programados.',
           cita_id: cita.id ?? null,
           phone,
+          scheduled,
         });
       }
 
@@ -858,6 +943,7 @@ export async function processCita(req: Request, res: Response) {
         trigger: 'inmediato',
         status: 'success',
         timestamp: new Date().toISOString(),
+        cita: citaSnapshot(cita),
       });
 
       return res.status(201).json({
@@ -867,6 +953,7 @@ export async function processCita(req: Request, res: Response) {
         cita_id: cita.id ?? null,
         phone,
         response: result,
+        scheduled,
       });
     } catch (error) {
       recordSentMessage({
@@ -878,6 +965,7 @@ export async function processCita(req: Request, res: Response) {
         status: 'failed',
         error: String(error),
         timestamp: new Date().toISOString(),
+        cita: citaSnapshot(cita),
       });
       return returnError(req, res, error);
     }
@@ -937,6 +1025,15 @@ export async function sendReminderNow(req: Request, res: Response) {
     ? clientDisplayName(reminder.cita.cliente)
     : undefined;
 
+  const citaInfo: CitaSnapshot | undefined = reminder.cita
+    ? {
+        fecha: reminder.cita.fecha,
+        hora: reminder.cita.hora,
+        servicios: reminder.cita.servicios,
+        empleado: reminder.cita.empleado,
+      }
+    : undefined;
+
   const message = reminder.cita
     ? buildDynamicReminderMessage({
         fecha: reminder.cita.fecha,
@@ -965,6 +1062,7 @@ export async function sendReminderNow(req: Request, res: Response) {
         trigger: 'recordatorio',
         status: 'paused',
         timestamp: new Date().toISOString(),
+        cita: citaInfo,
       });
       return res.status(200).json({
         status: 'paused',
@@ -1006,6 +1104,7 @@ export async function sendReminderNow(req: Request, res: Response) {
       trigger: 'recordatorio',
       status: 'success',
       timestamp: new Date().toISOString(),
+      cita: citaInfo,
     });
 
     return res.status(200).json({
@@ -1024,6 +1123,7 @@ export async function sendReminderNow(req: Request, res: Response) {
       status: 'failed',
       error: String(error),
       timestamp: new Date().toISOString(),
+      cita: citaInfo,
     });
     return returnError(req, res, error);
   }

@@ -1,8 +1,8 @@
 import AutomationPanel from '../components/AutomationPanel';
+import CitasPipelinePanel from '../components/CitasPipelinePanel';
 import ConnectionPanel from '../components/ConnectionPanel';
 import ConversationsPanel from '../components/ConversationsPanel';
 import OutcomesPanel from '../components/OutcomesPanel';
-import RemindersPanel from '../components/RemindersPanel';
 import RequestsPanel from '../components/RequestsPanel';
 import SentMessagesPanel from '../components/SentMessagesPanel';
 import { useAuth } from '../auth/AuthContext';
@@ -26,26 +26,12 @@ export default function Dashboard() {
         <AutomationPanel />
         <ConnectionPanel />
 
-        <div className="panel-pair panel-pair--pipeline">
-          <RemindersPanel />
-          <span className="pipeline-arrow" aria-hidden="true">
-            <svg viewBox="0 0 24 24" width="14" height="14" fill="none">
-              <path
-                d="M5 12h14m0 0-5-5m5 5-5 5"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            </svg>
-          </span>
-          <SentMessagesPanel />
-        </div>
+        <CitasPipelinePanel />
 
-        <div className="panel-pair">
-          <ConversationsPanel />
-          <OutcomesPanel />
-        </div>
+        <ConversationsPanel />
+        <OutcomesPanel />
+
+        <SentMessagesPanel />
 
         <RequestsPanel />
       </main>

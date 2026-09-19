@@ -2,7 +2,8 @@ import { ServerOptions } from './types/ServerOptions';
 
 export default {
   secretKey: 'THISISMYSECURETOKEN',
-  citasCallbackUrl: process.env.CITAS_CALLBACK_URL || '',  // URL de Laravel que recibe las respuestas del cliente
+  citasApiUrl: process.env.CITAS_API_URL || '',  // URL base de Laravel para las rutas /api/wpp/citas...
+  citasApiToken: process.env.WPPCONNECT_TOKEN || '',  // mismo texto fijo que Laravel guarda como WPPCONNECT_TOKEN
   admin: {
     jwtSecret: process.env.JWT_SECRET || '',
     username: process.env.ADMIN_USERNAME || '',

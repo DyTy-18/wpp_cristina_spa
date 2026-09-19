@@ -62,28 +62,30 @@ export default function RequestsPanel() {
       {requests.length === 0 ? (
         <p className="muted">Todavía no hay actividad registrada.</p>
       ) : (
-        <table>
-          <thead>
-            <tr>
-              <th>Hora</th>
-              <th>Método</th>
-              <th>Ruta</th>
-              <th>Estado</th>
-            </tr>
-          </thead>
-          <tbody>
-            {requests.map((r, i) => (
-              <tr key={i}>
-                <td className="nowrap-cell">{formatTime(r.timestamp)}</td>
-                <td>{r.method}</td>
-                <td className="truncate">{r.path}</td>
-                <td className={r.status >= 400 ? 'error-text' : undefined}>
-                  {r.status}
-                </td>
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Hora</th>
+                <th>Método</th>
+                <th>Ruta</th>
+                <th>Estado</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {requests.map((r, i) => (
+                <tr key={i}>
+                  <td className="nowrap-cell">{formatTime(r.timestamp)}</td>
+                  <td>{r.method}</td>
+                  <td className="truncate">{r.path}</td>
+                  <td className={r.status >= 400 ? 'error-text' : undefined}>
+                    {r.status}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </section>
   );

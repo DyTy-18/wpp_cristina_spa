@@ -14,7 +14,15 @@
  * limitations under the License.
  */
 
+import { createPersistentLog } from './persistentLog';
 import { emitCitasUpdate } from './realtime';
+
+export interface CitaSnapshot {
+  fecha: string;
+  hora: string;
+  servicios?: string[];
+  empleado?: string;
+}
 
 export interface SentMessageEntry {
   phone: string;
@@ -25,17 +33,20 @@ export interface SentMessageEntry {
   status: 'success' | 'failed' | 'paused';
   error?: string;
   timestamp: string;
+  cita?: CitaSnapshot;
 }
 
-const MAX_ENTRIES = 200;
-const entries: SentMessageEntry[] = [];
+const MAX_ENTRIES = 2000;
+const log = createPersistentLog<SentMessageEntry>(
+  'sent-messages.json',
+  MAX_ENTRIES
+);
 
 export function recordSentMessage(entry: SentMessageEntry): void {
-  entries.unshift(entry);
-  if (entries.length > MAX_ENTRIES) entries.length = MAX_ENTRIES;
+  log.record(entry);
   emitCitasUpdate();
 }
 
 export function listSentMessages(): SentMessageEntry[] {
-  return entries;
+  return log.list();
 }

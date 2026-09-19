@@ -67,28 +67,32 @@ export default function ConversationsPanel() {
       {conversations.length === 0 ? (
         <p className="muted">No hay conversaciones en curso.</p>
       ) : (
-        <table>
-          <thead>
-            <tr>
-              <th>Cliente</th>
-              <th>Estado</th>
-              <th>Cita</th>
-              <th>Desde</th>
-            </tr>
-          </thead>
-          <tbody>
-            {conversations.map((conv) => (
-              <tr key={conv.phone}>
-                <td>
-                  <ClientCell nombre={conv.nombre} phone={conv.phone} />
-                </td>
-                <td>{STATE_LABELS[conv.state] ?? conv.state}</td>
-                <td>{conv.cita_id ?? '—'}</td>
-                <td className="nowrap-cell">{formatDateTime(conv.created_at)}</td>
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Cliente</th>
+                <th>Estado</th>
+                <th>Cita</th>
+                <th>Desde</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {conversations.map((conv) => (
+                <tr key={conv.phone}>
+                  <td>
+                    <ClientCell nombre={conv.nombre} phone={conv.phone} />
+                  </td>
+                  <td>{STATE_LABELS[conv.state] ?? conv.state}</td>
+                  <td>{conv.cita_id ?? '—'}</td>
+                  <td className="nowrap-cell">
+                    {formatDateTime(conv.created_at)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </section>
   );
