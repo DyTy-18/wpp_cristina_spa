@@ -54,6 +54,14 @@ function clearStaleBrowserLock(userDataDir: string, logger?: any): void {
   }
 }
 
+// Último intento fallido por sesión — evita que un pedido de "iniciar
+// sesión" que llega justo después de una falla dispare otro create() en
+// paralelo (dos QR generándose a la vez), y de paso frena el machaque de
+// reintentos que puede hacer que WhatsApp bloquee temporalmente la
+// vinculación de ese número por demasiados intentos seguidos.
+const lastFailureAt: Record<string, number> = {};
+const RETRY_COOLDOWN_MS = 30_000;
+
 export default class CreateSessionUtil {
   startChatWootClient(client: any) {
     if (client.config.chatWoot && !client._chatWootClient)
@@ -73,6 +81,18 @@ export default class CreateSessionUtil {
     try {
       let client = this.getClient(session) as any;
       if (client.status != null && client.status !== 'CLOSED') return;
+
+      const lastFailure = lastFailureAt[session];
+      if (lastFailure && Date.now() - lastFailure < RETRY_COOLDOWN_MS) {
+        const secondsLeft = Math.ceil(
+          (RETRY_COOLDOWN_MS - (Date.now() - lastFailure)) / 1000
+        );
+        req.logger?.warn(
+          `[SessionStart] Cooldown activo para "${session}" — esperando ${secondsLeft}s antes de reintentar (evita generar QR en bucle).`
+        );
+        return;
+      }
+
       client.status = 'INITIALIZING';
       client.config = req.body;
 
@@ -151,6 +171,7 @@ export default class CreateSessionUtil {
                   client.qrcode = null;
                   client.close();
                   clientsArray[session] = undefined;
+                  lastFailureAt[session] = Date.now();
                 }
                 callWebHook(client, req, 'status-find', {
                   status: statusFind,
@@ -192,6 +213,7 @@ export default class CreateSessionUtil {
       // se reinicie el proceso entero.
       const client = this.getClient(session) as any;
       client.status = 'CLOSED';
+      lastFailureAt[session] = Date.now();
     }
   }
 
