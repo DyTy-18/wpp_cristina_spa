@@ -34,13 +34,22 @@ import Factory from './tokenStore/factory';
  * cualquier lock que quede al arrancar es de una ejecución muerta — es
  * seguro borrarlo antes de lanzar un browser nuevo.
  */
-function clearStaleBrowserLock(userDataDir: string): void {
+function clearStaleBrowserLock(userDataDir: string, logger?: any): void {
   for (const file of ['SingletonLock', 'SingletonCookie', 'SingletonSocket']) {
+    const filePath = path.join(userDataDir, file);
     try {
-      const filePath = path.join(userDataDir, file);
-      if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-    } catch {
-      // no crítico — si el lock sigue ahí el browser fallará igual y quedará en el log
+      // Estos son symlinks cuyo destino casi siempre ya no existe (apuntan a
+      // un PID/socket de un proceso muerto) — fs.existsSync sigue el link y
+      // devuelve false para un symlink roto, así que nunca detectaba nada
+      // para borrar. Hay que intentar unlink directo, sin chequear antes.
+      fs.unlinkSync(filePath);
+      logger?.info(`[SessionStart] Lock viejo de Chromium eliminado: ${filePath}`);
+    } catch (err: any) {
+      if (err?.code !== 'ENOENT') {
+        logger?.warn(
+          `[SessionStart] No se pudo eliminar ${filePath}: ${err}`
+        );
+      }
     }
   }
 }
@@ -78,7 +87,7 @@ export default class CreateSessionUtil {
 
       if (req.serverOptions.customUserDataDir) {
         const userDataDir = req.serverOptions.customUserDataDir + session;
-        clearStaleBrowserLock(userDataDir);
+        clearStaleBrowserLock(userDataDir, req.logger);
         req.serverOptions.createOptions.puppeteerOptions = {
           userDataDir,
         };
