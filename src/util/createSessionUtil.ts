@@ -428,6 +428,21 @@ export default class CreateSessionUtil {
                   session: client.session,
                 });
 
+                if (
+                  statusFind === StatusFind.disconnectedMobile &&
+                  !created &&
+                  client.status !== 'SYNCING'
+                ) {
+                  // Falso positivo de wppconnect: su vigilante arranca con
+                  // `connected = null` y, al ver la primera página de QR
+                  // (todavía sin registrar), lo reporta como "Session
+                  // Unpaired". Si nunca se llegó a vincular en este intento,
+                  // no hay nada que desvincular: se sigue esperando el QR.
+                  req.logger.info(
+                    `[Session] "${session}" aviso de desvinculación ignorado (todavía no estaba vinculada).`
+                  );
+                  return;
+                }
                 if (statusFind === StatusFind.disconnectedMobile) {
                   // El número se desvinculó (desde el teléfono, o WhatsApp lo
                   // sacó). El perfil guardado ya no sirve: se borra para que

@@ -229,9 +229,26 @@ describe('Ciclo de vida de la sesión', () => {
     expect(current().status).toBe('CONNECTED');
   });
 
-  it('desvinculado antes de terminar create() (bug original) → CLOSED y sin huérfanos', async () => {
+  it('falso "Session Unpaired" de wppconnect al mostrar el primer QR → se ignora', async () => {
+    // wppconnect arranca su vigilante con connected = null: la primera página
+    // de QR (sin registrar) dispara disconnectedMobile sin que nadie haya
+    // desvinculado nada. Pasaba en cada "Conectar" en producción.
+    await start();
+    last().options.statusFind('disconnectedMobile');
+    await tick(1_500);
+    expect(current().status).toBe('INITIALIZING');
+
+    await showQrFor(20_000);
+    last().options.statusFind('disconnectedMobile');
+    await tick(1_500);
+    expect(current().status).toBe('QRCODE');
+    expect(fs.existsSync(path.join(USER_DATA_ROOT, SESSION))).toBe(true);
+  });
+
+  it('desvinculado durante la sincronización, antes de terminar create() (bug original) → CLOSED y sin huérfanos', async () => {
     await start();
     await showQrFor(20_000);
+    last().options.statusFind('inChat');
     last().options.statusFind('disconnectedMobile');
     await tick(1_500);
     expect(current().status).toBe('CLOSED');
