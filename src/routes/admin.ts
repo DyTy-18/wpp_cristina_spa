@@ -47,8 +47,20 @@ adminRoutes.get(
   adminAuth,
   SessionController.getSessionState
 );
-adminRoutes.post('/session/start', adminAuth, SessionController.startSession);
+adminRoutes.post(
+  '/session/start',
+  adminAuth,
+  (req, _res, next) => {
+    // Un clic humano en "Conectar" no espera el cooldown anti-bucle.
+    (req as any).manualStart = true;
+    next();
+  },
+  SessionController.startSession
+);
 adminRoutes.post('/session/close', adminAuth, SessionController.closeSession);
+// Desvincula el número actual y borra el login guardado: el próximo
+// "Conectar" muestra un QR para vincular cualquier número.
+adminRoutes.post('/session/logout', adminAuth, SessionController.logOutSession);
 
 // Citas
 adminRoutes.post(

@@ -21,11 +21,10 @@ import QRCode from 'qrcode';
 import { Logger } from 'winston';
 
 import { version } from '../../package.json';
-import config from '../config';
-import CreateSessionUtil from '../util/createSessionUtil';
+import CreateSessionUtil, { resetSession } from '../util/createSessionUtil';
 import { callWebHook, contactToArray } from '../util/functions';
 import getAllTokens from '../util/getAllTokens';
-import { clientsArray, deleteSessionOnArray } from '../util/sessionUtil';
+import { clientsArray } from '../util/sessionUtil';
 
 const SessionUtil = new CreateSessionUtil();
 
@@ -254,30 +253,20 @@ export async function closeSession(req: Request, res: Response): Promise<any> {
    */
   const session = req.session;
   try {
-    const current = (clientsArray as any)[session];
-    if (current?.status === null || typeof current?.close !== 'function') {
-      // No hay una sesión con browser real corriendo (nunca llegó a
-      // inicializarse, ej. el lanzamiento de Chromium falló) — no hay nada
-      // que cerrar, pero igual limpiamos el estado atascado para permitir
-      // un reintento limpio desde "Iniciar sesión".
-      (clientsArray as any)[session] = { status: null };
-      return await res
-        .status(200)
-        .json({ status: true, message: 'Session successfully closed' });
-    } else {
-      (clientsArray as any)[session] = { status: null };
-
-      await req.client.close();
-      req.io.emit('whatsapp-status', false);
-      callWebHook(req.client, req, 'closesession', {
+    // Cierra el browser en cualquier estado (incluso si nunca terminó de
+    // iniciar). El login queda guardado: "Conectar" vuelve al mismo número.
+    const previous = req.client;
+    await resetSession(session, { reason: 'MANUAL', logger: req.logger });
+    req.io.emit('whatsapp-status', false);
+    if (previous) {
+      callWebHook(previous, req, 'closesession', {
         message: `Session: ${session} disconnected`,
         connected: false,
       });
-
-      return await res
-        .status(200)
-        .json({ status: true, message: 'Session successfully closed' });
     }
+    return await res
+      .status(200)
+      .json({ status: true, message: 'Session successfully closed' });
   } catch (error) {
     req.logger.error(error);
     return await res
@@ -301,43 +290,32 @@ export async function logOutSession(req: Request, res: Response): Promise<any> {
    */
   try {
     const session = req.session;
-    await req.client.logout();
-    deleteSessionOnArray(req.session);
+    const previous: any = req.client;
+    // Desvincula el dispositivo en WhatsApp si la sesión está viva. Si está
+    // trabada o ya caída, igual se sigue: lo importante es borrar el perfil
+    // local para que el próximo QR sirva para otro número.
+    if (previous && typeof previous.logout === 'function') {
+      await Promise.race([
+        previous.logout().catch((err: any) => req.logger.warn(err)),
+        new Promise((resolve) => setTimeout(resolve, 15_000)),
+      ]);
+    }
+    await resetSession(session, {
+      reason: 'LOGOUT',
+      wipeAuth: true,
+      logger: req.logger,
+    });
 
-    setTimeout(async () => {
-      const pathUserData = config.customUserDataDir + req.session;
-      const pathTokens = __dirname + `../../../tokens/${req.session}.data.json`;
-
-      if (fs.existsSync(pathUserData)) {
-        await fs.promises.rm(pathUserData, {
-          recursive: true,
-          maxRetries: 5,
-          force: true,
-          retryDelay: 1000,
-        });
-      }
-      if (fs.existsSync(pathTokens)) {
-        await fs.promises.rm(pathTokens, {
-          recursive: true,
-          maxRetries: 5,
-          force: true,
-          retryDelay: 1000,
-        });
-      }
-
-      req.io.emit('whatsapp-status', false);
-      callWebHook(req.client, req, 'logoutsession', {
+    req.io.emit('whatsapp-status', false);
+    if (previous) {
+      callWebHook(previous, req, 'logoutsession', {
         message: `Session: ${session} logged out`,
         connected: false,
       });
-
-      return await res
-        .status(200)
-        .json({ status: true, message: 'Session successfully closed' });
-    }, 500);
-    /*try {
-      await req.client.close();
-    } catch (error) {}*/
+    }
+    return await res
+      .status(200)
+      .json({ status: true, message: 'Session successfully closed' });
   } catch (error) {
     req.logger.error(error);
     res
@@ -499,10 +477,12 @@ export async function getSessionState(req: Request, res: Response) {
      }
    */
   try {
-    const { waitQrCode = false } = req.body;
-    const client = req.client;
+    const { waitQrCode = false } = req.body ?? {};
+    const client: any = req.client;
+    // Solo se muestra el QR mientras realmente se espera un escaneo — un QR
+    // viejo durante la sincronización invita a escanear de nuevo.
     const qr =
-      client?.urlcode != null && client?.urlcode != ''
+      client?.status === 'QRCODE' && client?.urlcode
         ? await QRCode.toDataURL(client.urlcode)
         : null;
 
@@ -512,7 +492,9 @@ export async function getSessionState(req: Request, res: Response) {
       res.status(200).json({
         status: client.status,
         qrcode: qr,
-        urlcode: client.urlcode,
+        urlcode: qr ? client.urlcode : null,
+        phone: client.connectedNumber ?? null,
+        closedReason: client.closedReason ?? null,
         version: version,
       });
   } catch (ex) {

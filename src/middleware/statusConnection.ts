@@ -61,10 +61,17 @@ export default async function statusConnection(
       }
       req.body.phone = localArr;
     } else {
+      // Mismo 404 de siempre (Laravel depende de él), pero con el estado real
+      // para poder distinguir "vinculando" de "caída" en los logs.
+      const sessionStatus = (req.client as any)?.status ?? 'CLOSED';
       return res.status(404).json({
         response: null,
         status: 'Disconnected',
-        message: 'A sessão do WhatsApp não está ativa.',
+        sessionStatus,
+        message:
+          sessionStatus === 'QRCODE' || sessionStatus === 'SYNCING'
+            ? `La sesión de WhatsApp se está vinculando (${sessionStatus}). Reintentar en unos minutos.`
+            : 'A sessão do WhatsApp não está ativa.',
       });
     }
     next();

@@ -18,6 +18,7 @@ import { Request } from 'express';
 import fs from 'fs';
 import path from 'path';
 
+import config from '../config';
 import { download } from '../controller/sessionController';
 import { WhatsAppServer } from '../types/WhatsAppServer';
 import chatWootClient from './chatWootClient';
@@ -43,24 +44,184 @@ function clearStaleBrowserLock(userDataDir: string, logger?: any): void {
       // devuelve false para un symlink roto, así que nunca detectaba nada
       // para borrar. Hay que intentar unlink directo, sin chequear antes.
       fs.unlinkSync(filePath);
-      logger?.info(`[SessionStart] Lock viejo de Chromium eliminado: ${filePath}`);
+      logger?.info(
+        `[SessionStart] Lock viejo de Chromium eliminado: ${filePath}`
+      );
     } catch (err: any) {
       if (err?.code !== 'ENOENT') {
-        logger?.warn(
-          `[SessionStart] No se pudo eliminar ${filePath}: ${err}`
-        );
+        logger?.warn(`[SessionStart] No se pudo eliminar ${filePath}: ${err}`);
       }
     }
   }
 }
 
-// Último intento fallido por sesión — evita que un pedido de "iniciar
-// sesión" que llega justo después de una falla dispare otro create() en
-// paralelo (dos QR generándose a la vez), y de paso frena el machaque de
-// reintentos que puede hacer que WhatsApp bloquee temporalmente la
-// vinculación de ese número por demasiados intentos seguidos.
+/**
+ * Mata los procesos de Chromium que usan este userDataDir. Hace falta cuando
+ * create() de wppconnect se queda colgado: todavía no nos devolvió el cliente,
+ * así que no hay `client.close()` para llamar, y el browser queda huérfano
+ * (sigue logueado/mostrando QR, pero ninguna request puede usarlo).
+ * Solo funciona en Linux (/proc) — en otros SO no hace nada.
+ */
+function killBrowserForUserDataDir(
+  userDataDir: string | null,
+  logger?: any
+): void {
+  if (!userDataDir || !fs.existsSync('/proc')) return;
+  const target = path.resolve(userDataDir);
+  for (const pid of fs.readdirSync('/proc')) {
+    if (!/^\d+$/.test(pid) || Number(pid) === process.pid) continue;
+    try {
+      const args = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0');
+      const usesDir = args.some(
+        (arg) =>
+          arg.startsWith('--user-data-dir=') &&
+          path.resolve(arg.slice('--user-data-dir='.length)) === target
+      );
+      if (usesDir) {
+        process.kill(Number(pid), 'SIGKILL');
+        logger?.warn(`[Session] Chromium terminado (pid ${pid})`);
+      }
+    } catch (err) {
+      // El proceso pudo haber terminado mientras recorríamos /proc.
+    }
+  }
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | null> {
+  return Promise.race([
+    promise,
+    new Promise<null>((resolve) => setTimeout(() => resolve(null), ms)),
+  ]);
+}
+
+function userDataDirFor(session: string): string | null {
+  return config.customUserDataDir ? config.customUserDataDir + session : null;
+}
+
+/*
+ * Ciclo de vida de una sesión (lo que ve el panel en `status`):
+ *
+ *   CLOSED ──start──▶ INITIALIZING ──▶ QRCODE ──escaneo──▶ SYNCING ──▶ CONNECTED
+ *     ▲                                  │                    │            │
+ *     └──────── resetSession() ◀─────────┴── timeouts ────────┴── unlink ──┘
+ *
+ * Toda salida hacia CLOSED pasa por resetSession(): invalida el intento en
+ * curso (generación), cierra/mata el Chromium y, si el número se desvinculó,
+ * borra el perfil para que el próximo QR sirva para cualquier número.
+ */
+
+// Cada llamada a create() recibe un número de generación. Cualquier callback
+// (QR, statusFind, timers) o resolución tardía de un intento viejo se descarta
+// comparando contra este valor — así un browser abandonado nunca vuelve a
+// mandar QRs al panel ni pisa el estado del intento nuevo.
+const sessionGeneration: Record<string, number> = {};
+const sessionTimers: Record<string, NodeJS.Timeout[]> = {};
+
+// Sin escaneo en este tiempo, el QR se da por vencido y se cierra el browser
+// (antes podía quedar mostrando QR durante horas).
+const QR_TIMEOUT_MS = 5 * 60_000;
+// WhatsApp Web refresca el QR cada 20-60s mientras nadie lo escanea. Si deja
+// de llegar uno nuevo por este tiempo, es que lo escanearon.
+const QR_SCANNED_GAP_MS = 2 * 60_000;
+// Después de escanear, la sincronización inicial puede tardar varios minutos.
+const SYNC_TIMEOUT_MS = 10 * 60_000;
+// Una vez que WhatsApp Web está en el chat, create() termina en segundos.
+// Si pasa este tiempo sin que termine, wppconnect quedó trabado en waitForLogin.
+const INCHAT_WATCHDOG_MS = 90_000;
+// Reinicios automáticos (browser caído, create() trabado): como mucho uno
+// cada este tiempo, para no entrar en bucle.
+const AUTO_RESTART_MIN_GAP_MS = 3 * 60_000;
+const lastAutoRestartAt: Record<string, number> = {};
+const lastConnectedNumber: Record<string, string> = {};
+
+// Último intento fallido por sesión — evita que un pedido automático de
+// "iniciar sesión" (Laravel, start-all) que llega justo después de una falla
+// dispare QR en bucle, que puede hacer que WhatsApp bloquee temporalmente la
+// vinculación del número. Los inicios manuales desde el panel lo saltean.
 const lastFailureAt: Record<string, number> = {};
 const RETRY_COOLDOWN_MS = 30_000;
+
+export type CloseReason =
+  | 'MANUAL'
+  | 'LOGOUT'
+  | 'UNLINKED'
+  | 'QR_EXPIRED'
+  | 'SYNC_TIMEOUT'
+  | 'BROWSER_CLOSED'
+  | 'START_FAILED';
+
+/**
+ * Lleva la sesión a CLOSED de forma segura, sin importar en qué estado esté
+ * (incluso si create() nunca terminó). `wipeAuth` borra el perfil de Chromium:
+ * se usa cuando el número se desvinculó o se pidió cambiar de número.
+ */
+export async function resetSession(
+  session: string,
+  opts: { reason: CloseReason; wipeAuth?: boolean; logger?: any }
+): Promise<void> {
+  const previous = resetInProgress[session];
+  const run = (async () => {
+    await previous;
+    await doResetSession(session, opts);
+  })();
+  resetInProgress[session] = run;
+  try {
+    await run;
+  } finally {
+    if (resetInProgress[session] === run) delete resetInProgress[session];
+  }
+}
+
+// Un reset en curso (sobre todo el borrado del perfil) debe terminar antes de
+// lanzar un Chromium nuevo sobre esa misma carpeta.
+const resetInProgress: Record<string, Promise<void> | undefined> = {};
+
+async function doResetSession(
+  session: string,
+  opts: { reason: CloseReason; wipeAuth?: boolean; logger?: any }
+): Promise<void> {
+  const { reason, wipeAuth = false, logger } = opts;
+  sessionGeneration[session] = (sessionGeneration[session] ?? 0) + 1;
+  for (const timer of sessionTimers[session] ?? []) clearTimeout(timer);
+  sessionTimers[session] = [];
+
+  const current: any = (clientsArray as any)[session];
+  (clientsArray as any)[session] = {
+    status: 'CLOSED',
+    session,
+    closedReason: reason,
+    closedAt: Date.now(),
+  };
+
+  if (current && typeof current.close === 'function') {
+    await withTimeout(
+      current.close().catch(() => null),
+      10_000
+    );
+  }
+  const userDataDir = userDataDirFor(session);
+  killBrowserForUserDataDir(userDataDir, logger);
+
+  if (wipeAuth && userDataDir) {
+    // Chromium recién muerto puede tardar un instante en soltar archivos.
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    await fs.promises
+      .rm(userDataDir, {
+        recursive: true,
+        force: true,
+        maxRetries: 5,
+        retryDelay: 500,
+      })
+      .catch((err) =>
+        logger?.error(`[Session] No se pudo borrar ${userDataDir}: ${err}`)
+      );
+  }
+  logger?.info(
+    `[Session] "${session}" cerrada (${reason}${
+      wipeAuth ? ', login borrado' : ''
+    })`
+  );
+}
 
 export default class CreateSessionUtil {
   startChatWootClient(client: any) {
@@ -72,18 +233,38 @@ export default class CreateSessionUtil {
     return client._chatWootClient;
   }
 
+  /** Reinicio automático con freno anti-bucle. */
+  private autoRestart(req: any, session: string) {
+    const last = lastAutoRestartAt[session] ?? 0;
+    if (Date.now() - last < AUTO_RESTART_MIN_GAP_MS) {
+      req.logger.error(
+        `[Session] "${session}" falló de nuevo poco después de un reinicio automático — queda cerrada, reconectar desde el panel.`
+      );
+      return;
+    }
+    lastAutoRestartAt[session] = Date.now();
+    delete lastFailureAt[session];
+    setTimeout(() => this.createSessionUtil(req, clientsArray, session), 3000);
+  }
+
   async createSessionUtil(
     req: any,
     clientsArray: any,
     session: string,
     res?: any
   ) {
+    let generation = 0;
     try {
+      await resetInProgress[session];
       let client = this.getClient(session) as any;
       if (client.status != null && client.status !== 'CLOSED') return;
 
       const lastFailure = lastFailureAt[session];
-      if (lastFailure && Date.now() - lastFailure < RETRY_COOLDOWN_MS) {
+      if (
+        !req.manualStart &&
+        lastFailure &&
+        Date.now() - lastFailure < RETRY_COOLDOWN_MS
+      ) {
         const secondsLeft = Math.ceil(
           (RETRY_COOLDOWN_MS - (Date.now() - lastFailure)) / 1000
         );
@@ -93,8 +274,19 @@ export default class CreateSessionUtil {
         return;
       }
 
-      client.status = 'INITIALIZING';
-      client.config = req.body;
+      generation = (sessionGeneration[session] ?? 0) + 1;
+      sessionGeneration[session] = generation;
+      const isCurrent = () => sessionGeneration[session] === generation;
+      const timers: NodeJS.Timeout[] = (sessionTimers[session] = []);
+
+      Object.assign(client, {
+        status: 'INITIALIZING',
+        config: req.body,
+        qrcode: null,
+        urlcode: null,
+        closedReason: null,
+        connectedNumber: null,
+      });
 
       const tokenStore = new Factory();
       const myTokenStore = tokenStore.createTokenStory(client);
@@ -105,13 +297,69 @@ export default class CreateSessionUtil {
 
       this.startChatWootClient(client);
 
-      if (req.serverOptions.customUserDataDir) {
-        const userDataDir = req.serverOptions.customUserDataDir + session;
+      const userDataDir = userDataDirFor(session);
+      let created = false;
+      let firstQrAt = 0;
+      let lastQrAt = 0;
+      let inChatWatchdogArmed = false;
+
+      if (userDataDir) {
+        // Un Chromium de un intento anterior que sobrevivió usaría el mismo
+        // perfil — se mata antes de lanzar uno nuevo.
+        killBrowserForUserDataDir(userDataDir, req.logger);
         clearStaleBrowserLock(userDataDir, req.logger);
         req.serverOptions.createOptions.puppeteerOptions = {
           userDataDir,
         };
       }
+
+      const markSyncing = () => {
+        if (created || client.status === 'SYNCING') return;
+        Object.assign(client, {
+          status: 'SYNCING',
+          qrcode: null,
+          urlcode: null,
+        });
+        req.io.emit('session-syncing', { session });
+        req.logger.info(`[Session] "${session}" QR escaneado, sincronizando…`);
+        timers.push(
+          setTimeout(() => {
+            if (created || !isCurrent()) return;
+            req.logger.warn(
+              `[Session] "${session}" lleva ${
+                SYNC_TIMEOUT_MS / 60_000
+              } min sincronizando sin terminar — reiniciando.`
+            );
+            resetSession(session, {
+              reason: 'SYNC_TIMEOUT',
+              logger: req.logger,
+            }).then(() => this.autoRestart(req, session));
+          }, SYNC_TIMEOUT_MS)
+        );
+      };
+
+      // Vigila el QR: vencido si nadie lo escanea, o pasa a SYNCING cuando
+      // deja de refrescarse (señal de que lo escanearon) aunque wppconnect no
+      // avise — en el bug original nunca llegaba "qrReadSuccess".
+      timers.push(
+        setInterval(() => {
+          if (!isCurrent() || created || client.status !== 'QRCODE') return;
+          const now = Date.now();
+          if (now - lastQrAt > QR_SCANNED_GAP_MS) {
+            markSyncing();
+          } else if (now - firstQrAt > QR_TIMEOUT_MS) {
+            req.logger.warn(
+              `[Session] "${session}" QR sin escanear por ${
+                QR_TIMEOUT_MS / 60_000
+              } min — se cierra.`
+            );
+            resetSession(session, {
+              reason: 'QR_EXPIRED',
+              logger: req.logger,
+            });
+          }
+        }, 15_000)
+      );
 
       const wppClient = await create(
         Object.assign(
@@ -130,6 +378,11 @@ export default class CreateSessionUtil {
           {
             session: session,
             phoneNumber: client.config.phone ?? null,
+            // Los vencimientos (QR y sincronización) los manejan los timers
+            // de arriba. El deviceSyncTimeout de wppconnect (3 min) cortaba
+            // sincronizaciones legítimas: en producción tardan ~5 min.
+            autoClose: 0,
+            deviceSyncTimeout: 0,
             deviceName:
               client.config.phone == undefined // bug when using phone code this shouldn't be passed (https://github.com/wppconnect-team/wppconnect-server/issues/1687#issuecomment-2099357874)
                 ? client.config?.deviceName ||
@@ -143,6 +396,7 @@ export default class CreateSessionUtil {
                   'WPPConnect-Server'
                 : undefined,
             catchLinkCode: (code: string) => {
+              if (!isCurrent()) return;
               this.exportPhoneCode(req, client.config.phone, code, client, res);
             },
             catchQR: (
@@ -151,38 +405,96 @@ export default class CreateSessionUtil {
               attempt: any,
               urlCode: string
             ) => {
+              if (!isCurrent()) return;
+              const now = Date.now();
+              if (!firstQrAt || client.status !== 'QRCODE') firstQrAt = now;
+              lastQrAt = now;
               this.exportQR(req, base64Qr, urlCode, client, res);
             },
             onLoadingScreen: (percent: string, message: string) => {
               req.logger.info(`[${session}] ${percent}% - ${message}`);
             },
             statusFind: (statusFind: StatusFind) => {
+              if (!isCurrent()) return;
               try {
                 eventEmitter.emit(
                   `status-${client.session}`,
                   client,
                   statusFind
                 );
-                if (
-                  statusFind === StatusFind.autocloseCalled ||
-                  statusFind === StatusFind.disconnectedMobile
-                ) {
-                  client.status = 'CLOSED';
-                  client.qrcode = null;
-                  client.close();
-                  clientsArray[session] = undefined;
-                  lastFailureAt[session] = Date.now();
-                }
+                req.logger.info(statusFind + '\n\n');
                 callWebHook(client, req, 'status-find', {
                   status: statusFind,
                   session: client.session,
                 });
-                req.logger.info(statusFind + '\n\n');
-              } catch (error) {}
+
+                if (statusFind === StatusFind.disconnectedMobile) {
+                  // El número se desvinculó (desde el teléfono, o WhatsApp lo
+                  // sacó). El perfil guardado ya no sirve: se borra para que
+                  // el próximo "Conectar" muestre un QR limpio para cualquier
+                  // número.
+                  resetSession(session, {
+                    reason: 'UNLINKED',
+                    wipeAuth: true,
+                    logger: req.logger,
+                  });
+                  req.io.emit('whatsapp-status', false);
+                  return;
+                }
+                if (
+                  statusFind === StatusFind.browserClose ||
+                  statusFind === StatusFind.autocloseCalled
+                ) {
+                  const wasConnected = created;
+                  resetSession(session, {
+                    reason: 'BROWSER_CLOSED',
+                    logger: req.logger,
+                  }).then(() => {
+                    // Si estaba funcionando, el login sigue guardado:
+                    // reiniciar lo recupera sin QR.
+                    if (wasConnected) this.autoRestart(req, session);
+                  });
+                  return;
+                }
+                if (statusFind === StatusFind.qrReadSuccess) {
+                  markSyncing();
+                }
+                if (statusFind === StatusFind.inChat && !created) {
+                  markSyncing();
+                  if (!inChatWatchdogArmed) {
+                    inChatWatchdogArmed = true;
+                    timers.push(
+                      setTimeout(() => {
+                        if (created || !isCurrent()) return;
+                        req.logger.warn(
+                          `[Session] "${session}" está en el chat pero create() no terminó en ${
+                            INCHAT_WATCHDOG_MS / 1000
+                          }s — reiniciando el navegador (el login guardado se reutiliza, no pide QR).`
+                        );
+                        resetSession(session, {
+                          reason: 'SYNC_TIMEOUT',
+                          logger: req.logger,
+                        }).then(() => this.autoRestart(req, session));
+                      }, INCHAT_WATCHDOG_MS)
+                    );
+                  }
+                }
+              } catch (error) {
+                req.logger.error(error);
+              }
             },
           }
         )
       );
+
+      if (!isCurrent()) {
+        // Este intento fue abandonado (timeout, cerrar, cambiar número).
+        wppClient.close().catch(() => null);
+        return;
+      }
+      created = true;
+      for (const timer of timers) clearTimeout(timer);
+      timers.length = 0;
 
       client = clientsArray[session] = Object.assign(wppClient, client);
       await this.start(req, client);
@@ -207,13 +519,13 @@ export default class CreateSessionUtil {
       }
     } catch (e) {
       req.logger.error(e);
-      // Cualquier falla acá (timeout, browser que no lanza, etc.) debe
-      // liberar la sesión — si se queda en "INITIALIZING", el guard del
-      // principio de esta función bloquea todo reintento futuro hasta que
-      // se reinicie el proceso entero.
-      const client = this.getClient(session) as any;
-      client.status = 'CLOSED';
+      // Un intento abandonado que falla tarde no debe tocar el intento nuevo.
+      if (!generation || sessionGeneration[session] !== generation) return;
       lastFailureAt[session] = Date.now();
+      await resetSession(session, {
+        reason: 'START_FAILED',
+        logger: req.logger,
+      });
     }
   }
 
@@ -303,9 +615,29 @@ export default class CreateSessionUtil {
   async start(req: Request, client: WhatsAppServer) {
     try {
       await client.isConnected();
-      Object.assign(client, { status: 'CONNECTED', qrcode: null });
+      const wid = await withTimeout(client.getWid(), 10_000).catch(() => null);
+      const connectedNumber = wid ? String(wid).split('@')[0] : null;
+      Object.assign(client, {
+        status: 'CONNECTED',
+        qrcode: null,
+        urlcode: null,
+        connectedNumber,
+      });
 
-      req.logger.info(`Started Session: ${client.session}`);
+      req.logger.info(
+        `Started Session: ${client.session} (número ${connectedNumber ?? '?'})`
+      );
+      const previousNumber = lastConnectedNumber[client.session];
+      if (
+        connectedNumber &&
+        previousNumber &&
+        previousNumber !== connectedNumber
+      )
+        req.logger.warn(
+          `[Session] "${client.session}" cambió de número: ${previousNumber} → ${connectedNumber}`
+        );
+      if (connectedNumber)
+        lastConnectedNumber[client.session] = connectedNumber;
       //callWebHook(client, req, 'session-logged', { status: 'CONNECTED'});
       req.io.emit('session-logged', { status: true, session: client.session });
       startHelper(client, req);

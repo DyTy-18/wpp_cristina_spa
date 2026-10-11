@@ -2,16 +2,40 @@ import { useCallback, useEffect, useState } from 'react';
 
 import apiClient from '../api/client';
 
+type Status = 'CLOSED' | 'INITIALIZING' | 'QRCODE' | 'SYNCING' | 'CONNECTED';
+
 interface SessionStatus {
-  status: string;
+  status: Status | string;
   qrcode: string | null;
+  phone?: string | null;
+  closedReason?: string | null;
 }
 
 const POLL_INTERVAL_MS = 5000;
 
+const STATUS_LABEL: Record<string, string> = {
+  CLOSED: 'Desconectado',
+  INITIALIZING: 'Iniciando…',
+  QRCODE: 'Esperando escaneo',
+  SYNCING: 'Sincronizando…',
+  CONNECTED: 'Conectado',
+};
+
+// Por qué quedó cerrada la sesión (lo informa el servidor).
+const CLOSED_REASON: Record<string, string> = {
+  QR_EXPIRED: 'El código QR venció sin escanearse.',
+  UNLINKED:
+    'El número se desvinculó desde el teléfono. Conecta para vincular un número.',
+  LOGOUT: 'Número desvinculado. Conecta para vincular otro número.',
+  SYNC_TIMEOUT: 'La sincronización no terminó a tiempo.',
+  BROWSER_CLOSED: 'El navegador de WhatsApp se cerró inesperadamente.',
+  START_FAILED: 'No se pudo iniciar la sesión.',
+};
+
 export default function ConnectionPanel() {
   const [session, setSession] = useState<SessionStatus | null>(null);
   const [busy, setBusy] = useState(false);
+  const [confirmLogout, setConfirmLogout] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const fetchStatus = useCallback(async () => {
@@ -32,28 +56,29 @@ export default function ConnectionPanel() {
     return () => clearInterval(interval);
   }, [fetchStatus]);
 
-  const handleStart = async () => {
+  const run = async (path: string, body?: object) => {
     setBusy(true);
+    setError(null);
     try {
-      await apiClient.post('/api/admin/session/start', { waitQrCode: false });
-      await fetchStatus();
+      await apiClient.post(path, body);
+    } catch {
+      setError('La acción falló. Intenta de nuevo.');
     } finally {
+      setConfirmLogout(false);
+      await fetchStatus();
       setBusy(false);
     }
   };
 
-  const handleClose = async () => {
-    setBusy(true);
-    try {
-      await apiClient.post('/api/admin/session/close');
-      await fetchStatus();
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const isClosed = !session || session.status === 'CLOSED';
-  const isConnected = !isClosed && !session?.qrcode;
+  const status = session?.status ?? null;
+  const isClosed = !session || status === 'CLOSED';
+  const isConnected = status === 'CONNECTED';
+  const isLinking =
+    status === 'INITIALIZING' || status === 'QRCODE' || status === 'SYNCING';
+  const reason =
+    isClosed && session?.closedReason
+      ? CLOSED_REASON[session.closedReason]
+      : null;
 
   return (
     <section className="panel">
@@ -77,30 +102,93 @@ export default function ConnectionPanel() {
 
       <span
         className={`connection-status ${
-          !session ? '' : isClosed ? 'is-closed' : 'is-connected'
+          !session
+            ? ''
+            : isConnected
+            ? 'is-connected'
+            : isClosed
+            ? 'is-closed'
+            : ''
         }`}
       >
         <span className="dot" />
-        {session?.status ?? 'Cargando…'}
+        {status ? STATUS_LABEL[status] ?? status : 'Cargando…'}
+        {isConnected && session?.phone && ` · +${session.phone}`}
       </span>
 
+      {reason && <p className="muted">{reason}</p>}
+
+      {status === 'QRCODE' && session?.qrcode && (
+        <div className="qr-box">
+          <img src={session.qrcode} alt="Código QR de WhatsApp" />
+          <p>
+            En el teléfono: WhatsApp → Dispositivos vinculados → Vincular un
+            dispositivo.
+          </p>
+        </div>
+      )}
+
+      {status === 'SYNCING' && (
+        <p className="muted">
+          QR escaneado. WhatsApp está sincronizando, puede tardar unos minutos.
+          No vuelvas a escanear.
+        </p>
+      )}
+
       {isClosed && (
-        <button onClick={handleStart} disabled={busy}>
+        <button
+          onClick={() => run('/api/admin/session/start', { waitQrCode: false })}
+          disabled={busy}
+        >
           Conectar
         </button>
       )}
 
-      {!isClosed && session?.qrcode && (
-        <div className="qr-box">
-          <img src={session.qrcode} alt="Código QR de WhatsApp" />
-          <p>Escanea este código con WhatsApp en tu teléfono.</p>
+      {(isConnected || isLinking) && !confirmLogout && (
+        <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+          <button
+            className="ghost"
+            onClick={() => run('/api/admin/session/close')}
+            disabled={busy}
+          >
+            {isConnected ? 'Desconectar' : 'Cancelar'}
+          </button>
+          {isConnected && (
+            <button
+              className="ghost"
+              onClick={() => setConfirmLogout(true)}
+              disabled={busy}
+            >
+              Cambiar número
+            </button>
+          )}
         </div>
       )}
 
-      {isConnected && (
-        <button onClick={handleClose} disabled={busy}>
-          Desconectar
-        </button>
+      {confirmLogout && (
+        <div>
+          <p>
+            Se desvinculará{' '}
+            <strong>+{session?.phone ?? 'el número actual'}</strong> y se
+            borrará su sesión. Después podrás vincular otro número con un QR
+            nuevo.
+          </p>
+          <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+            <button
+              onClick={() => run('/api/admin/session/logout')}
+              disabled={busy}
+            >
+              Sí, desvincular
+            </button>
+            <button
+              className="ghost"
+              onClick={() => setConfirmLogout(false)}
+              disabled={busy}
+            >
+              No
+            </button>
+          </div>
+        </div>
       )}
     </section>
   );
